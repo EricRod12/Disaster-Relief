@@ -1,0 +1,683 @@
+---
+title: "disaster relief part 1"
+author: "Eric Rodriguez"
+date: "2024-03-16"
+output: html_document
+---
+
+
+```{r hide-code, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(discrim)
+library(patchwork)
+#install.packages("glmnet")
+library(glmnet)
+#install.packages("doParallel")
+library(dplyr)
+library(doParallel)
+library(caret)
+library(rsample)
+library(MASS) 
+library(discrim)
+library(yardstick)
+```
+
+```{r}
+train <- read.csv(file="C:/Users/ericr/Downloads/HaitiPixels.csv")
+```
+
+```{r}
+train$Class <- as.factor(train$Class)
+```
+
+```{r}
+train$Blue_Tarp <- ifelse(train$Class == "Blue Tarp", 1, 0)
+```
+
+```{r}
+train$Blue_Tarp <- as.factor(train$Blue_Tarp)
+```
+
+```{r}
+train <- subset(train, select = -Class)
+
+```
+
+```{r}
+formula <- Blue_Tarp ~`Red`+`Green`+`Blue`
+```
+
+
+```{r}
+# View the value counts of the Blue_Tarp column in train
+table(train$Blue_Tarp)
+
+```
+
+
+
+```{r}
+resamples <- vfold_cv(train, v=10, strata=Blue_Tarp)
+metrics <- metric_set(roc_auc, accuracy)
+cv_control <- control_resamples(save_pred=TRUE)
+```
+
+```{r}
+logreg_spec <- logistic_reg(mode="classification") %>%
+set_engine('glm')
+lda_spec <- discrim_linear(mode="classification") %>%
+set_engine('MASS')
+qda_spec <- discrim_quad(mode="classification") %>%
+set_engine('MASS')
+```
+
+```{r}
+dis_recipe <- recipe(formula, data=train) %>%
+step_normalize(all_numeric_predictors())
+```
+
+```{r}
+logreg_wf <- workflow() %>%
+add_recipe(dis_recipe) %>%
+add_model(logreg_spec)
+lda_wf <- workflow() %>%
+add_recipe(dis_recipe) %>%
+add_model(lda_spec)
+qda_wf <- workflow() %>%
+add_recipe(dis_recipe) %>%
+add_model(qda_spec)
+
+
+```
+
+```{r}
+logreg_cv <- fit_resamples(logreg_wf, resamples, metrics=metrics, control=cv_control)
+lda_cv <- fit_resamples(lda_wf, resamples, metrics=metrics, control=cv_control)
+qda_cv <- fit_resamples(qda_wf, resamples, metrics=metrics, control=cv_control)
+```
+
+
+```{r}
+cv_metrics <- bind_rows(
+collect_metrics(logreg_cv) %>% mutate(model="Logistic regression"),
+collect_metrics(lda_cv) %>% mutate(model="LDA"),
+collect_metrics(qda_cv) %>% mutate(model="QDA")
+)
+
+```
+
+```{r}
+ggplot(cv_metrics, aes(x=mean, y=model, xmin=mean-std_err, xmax=mean+std_err)) +
+geom_point() +
+geom_linerange() +
+facet_wrap(~ .metric)
+
+```
+
+
+Above are the metrics for each model (Logistic Regression, LDA, and QDA) before threshold optimization. We will now perform 10 fold cross validation while optimizing the J index for each fold. The reason for choosing the J-index as a metric for threshold optimization is that it is often more reliable than something like accuracy when there are extremely unbalanced classes for the response variable. We created a function called find_optimal_threshold that iterates over each of the folds and calculates the J-index of each fold and finds the threshold that maximizes the J-index.
+```{r}
+#writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+#install.packages("probably")
+#pak::pak("probably")
+
+library(probably)
+#pkgbuild::check_build_tools(debug = TRUE)
+#install.packages("pak")
+library(pkgbuild)
+#install.packages("pkgbuild")
+#pak::pak("tidymodels/probably")
+#pkgbuild::check_build_tools(debug = TRUE)
+threshold_graph <- function(model_cv, model_name) {
+performance <- probably::threshold_perf(collect_predictions(model_cv), Blue_Tarp, .pred_1,
+thresholds=seq(0.05, 0.95, 0.01), event_level="second",
+metrics=metric_set(j_index, accuracy, kap))
+max_metrics <- performance %>%
+group_by(.metric) %>%
+filter(.estimate == max(.estimate))
+ggplot(performance, aes(x=.threshold, y=.estimate, color=.metric)) +
+geom_line() +
+geom_point(data=max_metrics, color="black") +
+labs(x="Threshold", y="Metric value") +
+coord_cartesian(ylim=c(0, 1.0))
+}
+g1 <- threshold_graph(logreg_cv, "Logistic regression")
+g2 <- threshold_graph(lda_cv, "LDA")
+g3 <- threshold_graph(qda_cv, "QDA")
+
+
+```
+
+```{r, fig.width=4, fig.height=7}
+combined_plot <- g1/ g2 /g3
+combined_plot
+```
+
+Above are the threshold optimization metrics. The three graphs are showing the results of our function that calculates performance metrics, such as accuracy, j_index, and kap for different metrics within the specified range of 0.05 and 0.95. The dots represent the highest threshold value for each metric.
+
+```{r}
+calculate_conf_mat <- function(model_cv,threshold) {
+collect_predictions(model_cv) %>%
+mutate(
+.pred_1 = if_else(.pred_1>threshold, 'high', 'low'),
+.pred_class = factor(.pred_class, levels=c(0, 1))
+) %>%
+conf_mat(truth=Blue_Tarp, estimate=.pred_class)
+}
+
+#me<-collect_predictions(logreg_cv)
+```
+
+
+```{r}
+find_optimal_threshold <- function(predictions, truth) {
+  # Create a range of thresholds
+  thresholds <- seq(0, 1, by = 0.01)
+  
+  # Initialize vectors to store J-index values for each threshold
+  j_index_values <- numeric(length(thresholds))
+  
+  # Iterate over each threshold
+  for (i in seq_along(thresholds)) {
+    # Convert probabilities to binary predictions based on the threshold
+    binary_predictions <- ifelse(predictions > thresholds[i], TRUE, FALSE)
+    
+    # Calculate confusion matrix
+    confusion_matrix <- table(binary_predictions, truth)
+    
+    # Ensure there are enough samples in each class for calculations
+    if (ncol(confusion_matrix) != 2 || nrow(confusion_matrix) != 2) {
+      j_index_values[i] <- 0  # Set J-index to 0 if confusion matrix dimensions are not as expected
+    } else if (sum(confusion_matrix[2, ]) == 0 || sum(confusion_matrix[, 2]) == 0) {
+      j_index_values[i] <- 0  # Set J-index to 0 if sensitivity or specificity is undefined
+    } else {
+      # Calculate sensitivity and specificity
+      sensitivity <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+      specificity <- confusion_matrix[1, 1] / sum(confusion_matrix[1, ])
+      
+      # Calculate J-index
+      j_index_values[i] <- sensitivity + specificity - 1
+    }
+  }
+  
+  # Find the optimal threshold that maximizes the J-index
+  optimal_threshold <- thresholds[which.max(j_index_values)]
+  optimal_j_index <- max(j_index_values)
+  
+  return(list(optimal_threshold = optimal_threshold, optimal_j_index = optimal_j_index))
+}
+```
+
+```{r}
+calculate_metrics_at_threshold <- function(predictions, truth, threshold, data = "train") {
+  binary_predictions <- ifelse(predictions > threshold, TRUE, FALSE)
+  confusion_matrix <- table(binary_predictions, truth)
+  
+  # Ensure there are enough samples in each class for calculations
+  if (ncol(confusion_matrix) != 2 || nrow(confusion_matrix) != 2) {
+    return(list(accuracy = 0, sensitivity = 0, specificity = 0, j_index = 0))  # Set all metrics to 0 if confusion matrix dimensions are not as expected
+  } else if (sum(confusion_matrix[2, ]) == 0 || sum(confusion_matrix[, 2]) == 0) {
+    return(list(accuracy = 0, sensitivity = 0, specificity = 0, j_index = 0))  # Set all metrics to 0 if sensitivity or specificity is undefined
+  } else {
+    # Calculate accuracy
+    accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+    
+    # Calculate sensitivity
+    sensitivity <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+    
+    # Calculate specificity
+    specificity <- confusion_matrix[1, 1] / sum(confusion_matrix[1, ])
+    
+    # Calculate J-index
+    j_index <- sensitivity + specificity - 1
+    
+    precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+    
+    # Print whether it's for train or test data
+    cat("Metrics for", data, "data at threshold", threshold, ":\n")
+    cat("Accuracy:", accuracy, "\n")
+    cat("Sensitivity:", sensitivity, "\n")
+    cat("Specificity:", specificity, "\n")
+    cat("J-index:", j_index, "\n")
+    cat("Precision:", precision, "\n")
+        
+    return(list(accuracy = accuracy, sensitivity = sensitivity, specificity = specificity, j_index = j_index, precision = precision))
+  }
+}
+```
+
+We perform 10 fold cross validation and threshold optimization with J-index as the metric for LDA and QDA. We are creating 10 fold cross validation splits from the training set. The data is divided into 10 parts, with each part used once as a validation set while the rest serve as a training set. We are ensuring the proportion of the two classes that is approximately equal within each fold, which is particularly useful when handling imbalanced datasets. Below are the results for each fold and for each model. 
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(purrr)
+
+
+# Define the resampling procedure
+set.seed(123)
+folds <- vfold_cv(train, v = 10, strata = Blue_Tarp)
+
+
+
+```
+First we define the resampling procedure. Then, we perform cross validation. We fit the model on the fold's training data, predict on the fold's test data. Then, we find the optimal threshold for each fold, calculate metrics at the optimal threshold, and then store the metrics and the optimal threshold for each fold.
+
+We created a function called perform_cv_with_threshold for our three models, which allows us to assess our models performance at our optimal threshold during 10 fold CV by leveraging out find_optimal_threshold and calculate_metrics_at_threshold functions. In other words, the function goes through each fold, finds the best threshold for that particular fold based on the best J index, and then we are able to have the results of each fold for each model. 
+```{r, results='hide', message=FALSE, warning=FALSE}
+perform_cv_with_threshold <- function(model_spec, folds, dis_recipe) {
+  fold_results <- list()
+  metrics_list <- list(accuracy = numeric(), sensitivity = numeric(), specificity = numeric(), j_index = numeric(), precision = numeric())
+  optimal_thresholds <- numeric()
+  
+  for (i in 1:length(folds$splits)) {
+    fold_data <- assessment(folds$splits[[i]])
+    fold_train_data <- analysis(folds$splits[[i]])
+    
+    fitted_model <- workflow() %>%
+      add_recipe(dis_recipe) %>%
+      add_model(model_spec) %>%
+      fit(data = fold_train_data)
+    
+    predictions <- predict(fitted_model, new_data = fold_data, type = "prob") %>%
+      bind_cols(fold_data)
+    
+    optimal_threshold_info <- find_optimal_threshold(predictions$.pred_1, fold_data$Blue_Tarp)
+    optimal_thresholds <- c(optimal_thresholds, optimal_threshold_info$optimal_threshold)
+    
+    metrics <- calculate_metrics_at_threshold(predictions$.pred_1, fold_data$Blue_Tarp, optimal_threshold_info$optimal_threshold, "validation")
+    
+    # Storing each metric in metrics_list for later averaging
+    metrics_list$accuracy <- c(metrics_list$accuracy, metrics$accuracy)
+    metrics_list$sensitivity <- c(metrics_list$sensitivity, metrics$sensitivity)
+    metrics_list$specificity <- c(metrics_list$specificity, metrics$specificity)
+    metrics_list$j_index <- c(metrics_list$j_index, metrics$j_index)
+    metrics_list$precision<-c(metrics_list$precision, metrics$precision)
+  }
+  
+  # Calculate the mean of the metrics and optimal thresholds
+  #mean_metrics <- lapply(metrics_list, mean)
+  mean_metrics <- lapply(metrics_list, function(x) mean(x, na.rm = TRUE))
+  mean_optimal_threshold <- mean(optimal_thresholds)
+  
+  return(list(mean_metrics = mean_metrics, mean_optimal_threshold = mean_optimal_threshold))
+}
+
+results_logreg <- perform_cv_with_threshold(logreg_spec, folds, dis_recipe)
+print("Logistic Regression - Mean Metrics:")
+print(results_logreg$mean_metrics)
+print(sprintf("Mean Optimal Threshold: %f", results_logreg$mean_optimal_threshold))
+
+
+
+```
+```{r}
+results_lda <- perform_cv_with_threshold(lda_spec, folds, dis_recipe)
+print("LDA - Mean Metrics:")
+print(results_lda$mean_metrics)
+print(sprintf("Mean Optimal Threshold: %f", results_lda$mean_optimal_threshold))
+
+
+```
+```{r}
+results_qda <- perform_cv_with_threshold(qda_spec, folds, dis_recipe)
+print("QDA - Mean Metrics:")
+print(results_qda$mean_metrics)
+print(sprintf("Mean Optimal Threshold: %f", results_qda$mean_optimal_threshold))
+
+```
+
+Below are the confusion matrices for each model at the mean optimal threshold. 
+
+```{r}
+print(results_logreg$mean_optimal_threshold)
+cmlogreg<-calculate_conf_mat(logreg_cv,results_logreg$mean_optimal_threshold)
+print(cmlogreg)
+
+```
+TPR_LR:
+```{r}
+TPR <- cmlogreg$table[2,2] / (cmlogreg$table[2,2] + cmlogreg$table[1,2]) # TP / (TP + FN)
+print(TPR)
+
+```
+FPR_LR:
+```{r}
+FPR <- cmlogreg$table[2,1] / (cmlogreg$table[2,1] + cmlogreg$table[1,1])
+print(FPR)
+```
+
+```{r}
+cmlda<-calculate_conf_mat(lda_cv,results_lda$mean_optimal_threshold)
+print(cmlda)
+```
+TPR_LDA:
+```{r}
+TPR1 <- cmlda$table[2,2] / (cmlda$table[2,2] + cmlda$table[1,2]) # TP / (TP + FN)
+print(TPR1)
+```
+
+FPR_LDA:
+
+```{r}
+FPR1 <- cmlda$table[2,1] / (cmlda$table[2,1] + cmlda$table[1,1])
+print(FPR1)
+```
+
+```{r}
+cmqda<-calculate_conf_mat(qda_cv,results_qda$mean_optimal_threshold)
+print(cmqda)
+```
+TPR_QDA:
+
+```{r}
+TPR2 <- cmqda$table[2,2] / (cmqda$table[2,2] + cmqda$table[1,2]) # TP / (TP + FN)
+print(TPR2)
+```
+
+FPR_QDA:
+```{r}
+FPR2 <- cmlda$table[2,1] / (cmlda$table[2,1] + cmlda$table[1,1])
+print(FPR2)
+```
+From our confusion matrices, we see that the performances are solid, verifying what we saw from our mean performance metrics across the 10 folds for each model. 
+
+```{r}
+roc_cv_plot <- function(model_cv, model_name) {
+cv_predictions <- collect_predictions(model_cv)
+cv_ROC <- cv_predictions %>%
+roc_curve(truth=Blue_Tarp, .pred_1, event_level="second")
+autoplot(cv_ROC) +
+labs(title=model_name)
+}
+g1 <- roc_cv_plot(logreg_cv, "Logistic regression")
+g2 <- roc_cv_plot(lda_cv, "LDA")
+g3 <- roc_cv_plot(qda_cv, "QDA")
+g1 + g2 + g3
+```
+
+```{r}
+roc_cv_data <- function(model_cv) {
+cv_predictions <- collect_predictions(model_cv)
+cv_predictions %>%
+roc_curve(truth=Blue_Tarp, .pred_1, event_level="second")
+}
+bind_rows(
+roc_cv_data(logreg_cv) %>% mutate(model="Logistic regression"),
+roc_cv_data(lda_cv) %>% mutate(model="LDA"),
+roc_cv_data(qda_cv) %>% mutate(model="QDA")
+) %>%
+ggplot(aes(x=1-specificity, y=sensitivity, color=model)) +
+geom_line()
+```
+There is no real need to try and optimize the above models (Logstic, QDA, and LDA) further, with step_pca as predictors, or in other words, try to reduce the dimensionality of our dataset further. The reason is because with a dataset with only 3 predictors, there will be diminishing returns from trying to use step_pca as predictors. We already have excellent performance metrics without step_pca.
+
+KNN model
+
+Next we will do the KNN model. We will explore a range of K values between 1 and 30 and try to assess the best value for k based on metrics and performance with each k value within our 10 folds. We are also going to normalize the data prior to fitting the model.
+```{r}
+# Select the features you want to normalize
+selected_features_train <- train[, c("Red","Green","Blue")]
+
+# Normalize the selected features using z-score normalization
+scaled_features_train <- scale(selected_features_train)
+
+# Convert Blue_Tarp to a data frame
+train_Blue_Tarp <- data.frame(Blue_Tarp = train$Blue_Tarp)
+
+
+# Bind the scaled features with the Blue_Tarp variable and convert Blue_Tarp back to a factor
+normalized_train_data <- cbind(scaled_features_train, train_Blue_Tarp)
+normalized_train_data$Blue_Tarp <- factor(normalized_train_data$Blue_Tarp)
+
+
+# Ensure Blue_Tarp is a factor with 2 levels
+levels(normalized_train_data$Blue_Tarp) <- c("False", "True")
+
+
+
+```
+
+```{r}
+library(caret)
+#library(Metrics) # For additional metrics, if needed
+x<-train[, -which(names(train)=="Blue_Tarp")]
+train$Blue_Tarp<-factor(train$Blue_Tarp, levels=c(0,1), labels=c("Class0","Class1"))
+y<-train$Blue_Tarp
+# Set up cross-validation control
+ctrl <- trainControl(method = "cv",
+                     number = 10,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary,
+                     savePredictions="final")
+
+# Define a grid of k values to test
+k_values <- data.frame(k = c(1, 5, 10, 15, 20, 25, 30))
+
+# Train k-NN models
+knn_results <- train(x, y,
+                     method = "knn",
+                     tuneGrid = k_values,
+                     trControl = ctrl,
+                     preProcess = c("center", "scale"),
+                     metric = "ROC")
+
+
+
+
+knn_results$results$J_index <- knn_results$results$Sens + knn_results$results$Spec - 1
+
+# Identify the best k based on J-index
+best_row <- knn_results$results[which.max(knn_results$results$J_index), ]
+best_k <- best_row$k
+best_j_index <- best_row$J_index
+
+print(paste("Best k based on J-index:", best_k, "with J-index:", best_j_index))
+```
+
+This model is outperforming the previous three models, especially in accuracy and specificity. The performance among k values is relatively the same. It doesn't truly matter which k value we choose, because the knn model is performing well for all k values chosen, but if we had to, I would go with a k value of 50. The specificity and accuracy are extremely high for this chosen value of k.
+```{r}
+print(knn_results$results)
+```
+The final model chose k=20 based on ROC-AUC and k=10 based on J-index. J index is a better metric for imbalanced classes when comparing values for k in knn.
+This model has excellent performance metrics seemingly (accuracy, sensitivity, and specificity).
+
+```{r}
+library(pROC)
+
+# Train the KNN model with k = 10
+knn_model_10 <- train(formula,           
+                   data = normalized_train_data,   
+                   method = "knn",    
+                   trControl = ctrl,  
+                   tuneGrid = data.frame(k = 10))
+
+
+
+# Assuming `positive_class_prob` contains the probabilities of the positive class
+# Ensure y is a factor with explicit levels
+y <- factor(y, levels = c("Class0", "Class1"))
+
+
+```
+ Below are the selection results of the 10 fold CV based on maximizing J index.
+
+
+```{r}
+# Predict probabilities for the positive class
+predictions_KNN_train <- predict(knn_results, new_data = train, type = "prob", data="train")
+
+# Check column names
+colnames(predictions_KNN_train)
+
+
+optimal_threshold_KNN_train <- find_optimal_threshold(predictions_KNN_train$Class1, train$Blue_Tarp)
+
+print(optimal_threshold_KNN_train)
+```
+Below are the metrics for the train data set at the optimal threshold of .9 for our KNN model.
+
+```{r}
+metrics_KNN_train <- calculate_metrics_at_threshold(predictions_KNN_train$Class1, train$Blue_Tarp, optimal_threshold_KNN_train$optimal_threshold)
+
+cat("KNN Model (Train):\n")
+cat("Accuracy:", metrics_KNN_train$accuracy, "\n")
+cat("Sensitivity:", metrics_KNN_train$sensitivity, "\n")
+cat("Specificity:", metrics_KNN_train$specificity, "\n")
+cat("J-index:", metrics_KNN_train$j_index, "\n\n")
+
+
+```
+The above performance metrics seem good, however, we need to evaluate the confusion matrix at this optimal threshold. 
+
+```{r}
+# Convert probabilities to class predictions with explicit factor levels
+predictions_class <- ifelse(knn_results$pred$Class1 > 0.9, "Class1", "Class0")
+predictions_class <- factor(predictions_class, levels = c("Class0", "Class1"))
+
+xtab <- table(Predicted = predictions_class, Actual = y)
+
+# Now use the confusionMatrix function on this table
+# Ensure to specify which level of the factor is considered as the "positive" result if it's a binary classification
+conf_matrix <- confusionMatrix(xtab, positive = "Class1")
+
+# Print the confusion matrix
+print(conf_matrix)
+
+
+```
+
+FPR
+```{r}
+1685/(1685+59534)
+```
+
+We see that even with threshold optimization, our confusion matrix produces 0 for TPR and FPR of .028. This means it identified none of the positive cases correctly. It also was able to identify most negative cases as negative. However, since we have not been able to distinguish between the two classes well with knn based on the confusion matrix, we will say it is not effective for our purposes.
+
+
+
+```{r}
+
+cv_predictions <- knn_results$pred
+
+colnames(cv_predictions)
+# Using pROC to calculate ROC and AUC for the combined CV predictions
+roc_result <- roc(cv_predictions$obs, cv_predictions$Class1)
+auc_result <- auc(roc_result)
+
+# Plot ROC curve
+plot(roc_result, main = "ROC Curve for k-NN Model (CV)")
+abline(a=0, b=1, lty=2)  # Diagonal line for reference
+
+# Print AUC
+print(paste("AUC:", auc_result))
+```
+Here, we have a great looking ROC curve. In addition, we have a low AUC and high accuracy for the optimal  The issue is that the confusion matrix produces poor results. This is why its so important to check confusion matrices without jumping to conclusions about high performance metrics. 
+
+For our elasticnet penalized logistic regression, we first have to prepare the data for glmnet. This means turning our normalized train data into a matrix.
+
+
+```{r}
+x_train <- as.matrix(normalized_train_data[, -which(names(normalized_train_data) == "Blue_Tarp")])
+y_train <- normalized_train_data$Blue_Tarp
+
+```
+
+Next, we set up the training control, specifying 10-fold cross-validation and the ROC metric for evaluating model performance. ROC is a good metric for model evaluation, especially when dealing with imbalanced classes. 
+
+```{r}
+set.seed(123)  # for reproducibility
+cv_control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary, savePredictions = "final")
+
+```
+
+We train the  elastic net model using thw train function from the caret package, specifying a grid of alpha and lambda values.
+```{r}
+# Define the range of lambda values
+lambda_grid <- 10^seq(-3, 3, length = 100)
+
+# Define alpha values (mixing percentages between L1 and L2 penalties)
+alpha_grid <- seq(0, 1, by = 0.1)
+
+# Fit the elastic net model with cross-validation
+set.seed(123)  # for reproducibility
+enet_model <- train(
+  x = x_train,
+  y = y_train,
+  method = "glmnet",
+  trControl = cv_control,
+  tuneLength = 10,  # Select 10 lambda values; adjust if necessary
+  tuneGrid = expand.grid(alpha = alpha_grid, lambda = lambda_grid),
+  metric = "ROC",
+  preProcess = c("center", "scale"),  # Ensuring features are normalized
+  family = "binomial"
+)
+
+```
+
+```{r}
+# Get the best hyperparameters
+best_hyperparameters <- enet_model$bestTune
+
+# Get the best model's performance
+best_model_performance <- max(enet_model$results$ROC)
+
+# Print the results
+print(best_hyperparameters)
+print(best_model_performance)
+
+```
+
+
+
+```{r}
+print("Cross-validation results:")
+print(enet_model$results)
+```
+
+Above are the model selection results, or in other words, the values of alpha and lambda that produced the highest roc value on the train set. Now we evaluate the model on the test set by using the trained model.
+
+```{r}
+
+
+# Assuming enet_model is your trained model object with cross-validation
+roc_data <- roc(response = enet_model$pred$obs, predictor = enet_model$pred$True)
+
+plot(roc_data, main="ROC Curve")
+auc(roc_data)
+
+
+```
+```{r}
+predictions <- enet_model$pred
+
+
+xtab <- table(predictions$pred, predictions$obs)
+
+# Now calculate the confusion matrix
+# The second level ("1") is automatically considered the positive class
+conf_matrix <- confusionMatrix(xtab, positive="True")
+
+# Print the confusion matrix
+print(conf_matrix)
+
+# Calculate the confusion matrix using the observed and predicted classes
+conf_matrix <- confusionMatrix(predictions$pred, predictions$obs)
+
+print(conf_matrix)
+```
+
+TPR_enet: 
+```{r}
+1571/(1571+451)
+```
+
+FPR_enet:
+```{r}
+2/(2+61217)
+```
+
+We have a small FPR but our TPR is not as high as logistic regression. We will therefore say that our logistic regression model is the best. The logistic regression performed above 95% in key metrics such as accuracy, sensitivity, and specificity when looking at the mean performance across all 10 folds. It performed better than LDA and QDA when looking at these metrics alone. It also performed better in terms of TPR and FPR than LDA and QDA. The TPR is arguably the most important metric for our purposes, because we need to correctly identify the positive cases for our disaster relief efforts. Furthermore, the Logistic Regression is less computationally exhaustive and faster to run than the knn and penalized logistic regression. This may be a huge factor in future disaster relief efforts to consider.
