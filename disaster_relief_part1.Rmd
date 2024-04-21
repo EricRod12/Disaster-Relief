@@ -1,0 +1,1153 @@
+---
+title: "disaster relief part 1"
+author: "Eric Rodriguez"
+date: "2024-03-16"
+output: html_document
+---
+
+```{r}
+library(doParallel)
+cl <- makePSOCKcluster(parallel::detectCores(logical = FALSE))
+registerDoParallel(cl)
+```
+
+```{r hide-code, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+knitr::opts_chunk$set(fig.align="center", fig.pos="tbh")
+```
+
+
+
+```{r warning=FALSE, message=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(discrim)
+library(patchwork)
+#install.packages("glmnet")
+library(glmnet)
+#install.packages("doParallel")
+library(dplyr)
+library(doParallel)
+#library(caret)
+library(rsample)
+library(MASS) 
+library(discrim)
+library(yardstick)
+library(GGally)
+```
+
+```{r}
+set.seed(123)
+```
+
+
+```{r}
+train <- read.csv(file="C:/Users/ericr/Downloads/HaitiPixels.csv")
+```
+
+```{r}
+# Assuming all your .txt files are in the 'amaze' folder on your desktop
+folder_path <- "C:/Users/ericr/OneDrive/Desktop/amaze"  # Adjust the path if necessary
+
+# Define the column names
+column_names <- c("ID", "X", "Y", "Map_X", "Map_Y", "Lat", "Lon", "B1", "B2", "B3")
+
+# Function to read each file
+read_envi_data <- function(file_name) {
+  # Read in the file, skipping the first 8 lines
+  data <- read.table(file_name, skip = 8, header = FALSE, fill = TRUE, 
+                     col.names = column_names, check.names = FALSE, 
+                     sep = "", stringsAsFactors = FALSE)
+  return(data)
+}
+
+file_list <- list.files(path = folder_path, pattern = "\\.txt$", full.names = TRUE)
+
+# Apply the custom read function to all files
+df_list <- lapply(file_list, read_envi_data)
+
+# Combine all data frames into one
+test <- do.call(rbind, df_list)
+
+test <- subset(test, select = -c(ID, X, Y, Map_X, Map_Y, Lat, Lon))
+
+# View the top of the combined dataframe
+tail(test)
+
+
+```
+
+In the RGB color model, colors with higher values tend to be dominant in the mix to produce the resultant color. For a typical representation where higher numbers represent greater intensity:
+
+
+B1 likely represents Red
+B2 likely represents Green
+B3 likely represents Blue
+
+```{r}
+test <- test %>%
+  rename(
+    Red = B1,
+    Green = B2,
+    Blue = B3
+  )
+
+
+# Assign values to the Blue_Tarp column based on the specified counts for each group
+test$Blue_Tarp <- c(rep(0, 979278), rep(1, 4446), rep(0, 305211), rep(0, 6828), rep(0, 295510), rep(1, 3206), rep(0, 409698))
+
+```
+
+```{r}
+train$Class <- as.factor(train$Class)
+```
+
+```{r}
+train$Blue_Tarp <- ifelse(train$Class == "Blue Tarp", 1, 0)
+```
+
+```{r}
+train$Blue_Tarp <- as.factor(train$Blue_Tarp)
+test$Blue_Tarp <- as.factor(test$Blue_Tarp)
+```
+
+```{r}
+train_for_eda <- train
+```
+
+```{r}
+train <- subset(train, select = -Class)
+
+```
+
+```{r}
+library(scales)
+#install.packages("hues")
+library(hues)
+red_scaled <- test$Red[1:20]/255
+green_scaled <- test$Green[1:20] /255
+blue_scaled <- test$Blue[1:20] /255
+
+
+# Plot the color bars
+barplot(red_scaled, col=rgb(red_scaled, 0, 0), border=NA, main="Red Channel Intensity", xlab="Sample Index", ylab="Intensity")
+barplot(green_scaled, col=rgb(0, green_scaled, 0), border=NA, main="Green Channel Intensity", xlab="Sample Index", ylab="Intensity")
+barplot(blue_scaled, col=rgb(0, 0, blue_scaled), border=NA, main="Blue Channel Intensity", xlab="Sample Index", ylab="Intensity")
+
+```
+
+
+
+
+```{r}
+library(readxl)
+library(MASS)
+library(reshape2)
+
+```
+
+
+
+```{r}
+
+g1 <- ggplot(train, aes(x = Red)) +
+  geom_density(fill = "red", alpha = 0.7) +
+  labs(title = "Density Plot - Red",
+       x = "Red",
+       y = "Density")
+
+g2 <- ggplot(train, aes(x = Green)) +
+  geom_density(fill = "green", alpha = 0.7) +
+  labs(title = "Density Plot - Green",
+       x = "Green",
+       y = "Density")
+
+g3 <- ggplot(train, aes(x = Blue)) +
+  geom_density(fill = "lightblue", alpha = 0.7) +
+  labs(title = "Density Plot - Blue",
+       x = "Blue",
+       y = "Density")
+
+g1+g2+g3
+```
+
+```{r}
+ g7 <- ggplot(train_for_eda, aes(x = Red,y = Green, color = Class)) +
+  geom_point() +
+  labs(title = "Scatter Plot Red vs Green Split by Blue_Tarp",
+       x = "Red",
+       y = "Green")+ scale_color_manual(values=c("blue", "gray","brown","yellow","green"))
+
+
+ g8 <- ggplot(train_for_eda, aes(x = Red,y = Blue, color = Class)) +
+  geom_point() +
+  labs(title = "Scatter Plot Red vs Blue Split by Blue_Tarp",
+       x = "Red",
+       y = "Blue")+ scale_color_manual(values=c("blue", "gray","brown","yellow","green"))
+ 
+ 
+  g9 <- ggplot(train_for_eda, aes(x = Green,y = Blue, color = Class)) +
+  geom_point() +
+  labs(title = "Scatter Plot Green vs Blue Split by Blue_Tarp",
+       x = "Green",
+       y = "Blue")+ scale_color_manual(values=c("blue", "gray","brown","yellow","green"))  
+  g7/g8/g9
+  
+```
+
+
+```{r}
+g4 <- ggplot(train, aes(x = Red, fill = Blue_Tarp)) +
+  geom_density( alpha = 0.75) +
+  labs(title = "Density Plot Red Split by Blue_Tarp",
+       x = "Red",
+       y = "Density")+scale_fill_manual(values=c("gray", "blue"))
+
+g5 <- ggplot(train, aes(x = Green, fill = Blue_Tarp)) +
+  geom_density( alpha = 0.75) +
+  labs(title = "Density Plot Green Split by Blue_Tarp",
+       x = "Green",
+       y = "Density")+scale_fill_manual(values=c("gray", "blue"))
+
+g6 <- ggplot(train, aes(x = Blue, fill = Blue_Tarp)) +
+  geom_density( alpha = 0.75) +
+  labs(title = "Density Plot Blue Split by Blue_Tarp",
+       x = "Blue",
+       y = "Density")+scale_fill_manual(values=c("gray", "blue"))
+g4 / g5 / g6
+```
+
+```{r}
+ g7 <- ggplot(train, aes(x = Red,y = Green, color = Blue_Tarp)) +
+  geom_point() +
+  labs(title = "Scatter Plot Red vs Green Split by Blue_Tarp",
+       x = "Red",
+       y = "Green")+scale_color_manual(values=c("gray", "blue"))
+
+
+ g8 <- ggplot(train, aes(x = Red,y = Blue, color = Blue_Tarp)) +
+  geom_point() +
+  labs(title = "Scatter Plot Red vs Blue Split by Blue_Tarp",
+       x = "Red",
+       y = "Blue")+scale_color_manual(values=c("gray", "blue"))
+ 
+ 
+  g9 <- ggplot(train, aes(x = Green,y = Blue, color = Blue_Tarp)) +
+  geom_point() +
+  labs(title = "Scatter Plot Green vs Blue Split by Blue_Tarp",
+       x = "Green",
+       y = "Blue")+scale_color_manual(values=c("gray", "blue"))
+  
+  g7/g8/g9
+  
+```
+
+
+
+```{r}
+
+#Predictor variables correlation
+
+train%>%ggpairs(aes(alpha=0.1, color = Blue_Tarp),progress = FALSE)+scale_fill_manual(values=c("gray", "blue"))+ scale_color_manual(values=c("gray", "blue"))
+
+```
+
+```{r}
+formula <- Blue_Tarp ~`Red`+`Green`+`Blue`
+```
+
+
+```{r}
+# View the value counts of the Blue_Tarp column in train
+table(train$Blue_Tarp)
+
+```
+
+
+
+```{r}
+set.seed(123)
+resamples <- vfold_cv(train, v=10, strata=Blue_Tarp)
+metrics <- metric_set(roc_auc, accuracy)
+cv_control <- control_resamples(save_pred=TRUE)
+```
+
+```{r}
+logreg_spec <- logistic_reg(mode="classification") %>%
+set_engine('glm')
+lda_spec <- discrim_linear(mode="classification") %>%
+set_engine('MASS')
+qda_spec <- discrim_quad(mode="classification") %>%
+set_engine('MASS')
+```
+
+```{r}
+dis_recipe <- recipe(formula, data=train) %>%
+step_normalize(all_numeric_predictors())
+```
+
+```{r}
+logreg_wf <- workflow() %>%
+add_recipe(dis_recipe) %>%
+add_model(logreg_spec)
+lda_wf <- workflow() %>%
+add_recipe(dis_recipe) %>%
+add_model(lda_spec)
+qda_wf <- workflow() %>%
+add_recipe(dis_recipe) %>%
+add_model(qda_spec)
+
+
+```
+
+```{r}
+set.seed(123)
+logreg_cv <- fit_resamples(logreg_wf, resamples, metrics=metrics, control=cv_control)
+set.seed(123)
+lda_cv <- fit_resamples(lda_wf, resamples, metrics=metrics, control=cv_control)
+set.seed(123)
+qda_cv <- fit_resamples(qda_wf, resamples, metrics=metrics, control=cv_control)
+```
+
+ We will now perform 10 fold cross validation while optimizing the J index for the threshold. The reason for choosing the J-index as a metric for threshold optimization is that it is often more reliable than something like accuracy when there are extremely unbalanced classes for the response variable. We created a function called find_optimal_threshold that iterates over each of the folds and calculates the J-index of each fold and finds the threshold that maximizes the J-index.
+```{r}
+#writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+#install.packages("probably")
+#pak::pak("probably")
+
+library(probably)
+#pkgbuild::check_build_tools(debug = TRUE)
+#install.packages("pak")
+library(pkgbuild)
+#install.packages("pkgbuild")
+#pak::pak("tidymodels/probably")
+#pkgbuild::check_build_tools(debug = TRUE)
+threshold_graph <- function(model_cv, model_name) {
+performance <- probably::threshold_perf(collect_predictions(model_cv), Blue_Tarp, .pred_1,
+thresholds=seq(0.05, .95, 0.01), event_level="second",
+metrics=metric_set(j_index, accuracy, kap))
+max_metrics <- performance %>%
+group_by(.metric) %>%
+filter(.estimate == max(.estimate))
+max_j_index_threshold <- max_metrics %>%
+    filter(.metric == "j_index") %>%
+    pull(.threshold)
+plot <- ggplot(performance, aes(x=.threshold, y=.estimate, color=.metric)) +
+geom_line() +
+geom_point(data=max_metrics, color="black") +
+labs(x="Threshold", y="Metric value") +
+coord_cartesian(ylim=c(0, 1.0))
+
+ return(list(plot = plot, max_j_index_threshold = max_j_index_threshold))
+}
+logreg_results <- threshold_graph(logreg_cv, "Logistic regression")
+plot_logreg <- logreg_results$plot
+max_j_index_threshold_logreg <- logreg_results$max_j_index_threshold
+
+# Similarly, get the results for LDA and QDA
+lda_results <- threshold_graph(lda_cv, "LDA")
+plot_lda <- lda_results$plot
+max_j_index_threshold_lda <- lda_results$max_j_index_threshold
+
+qda_results <- threshold_graph(qda_cv, "QDA")
+plot_qda <- qda_results$plot
+max_j_index_threshold_qda <- qda_results$max_j_index_threshold
+
+
+```
+
+
+Above are the threshold optimization metrics. The three graphs are showing the results of our function that calculates performance metrics, such as accuracy, j_index, and kap for different metrics within the specified range of 0.05 and 0.95. The dots represent the highest threshold value for each metric.
+
+```{r}
+calculate_conf_mat <- function(model_cv,threshold) {
+collect_predictions(model_cv) %>%
+mutate(
+.pred_class = if_else(.pred_1>threshold, 1, 0),
+.pred_class = factor(.pred_class, levels=c(0, 1))
+) %>%
+conf_mat(truth=Blue_Tarp, estimate=.pred_class)
+
+}
+
+```
+
+
+
+We perform 10 fold cross validation and threshold optimization with J-index as the metric for LDA and QDA. We are creating 10 fold cross validation splits from the training set. The data is divided into 10 parts, with each part used once as a validation set while the rest serve as a training set. We are ensuring the proportion of the two classes that is approximately equal within each fold, which is particularly useful when handling imbalanced datasets. Below are the results for each fold and for each model. 
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(purrr)
+
+
+# Define the resampling procedure
+
+
+
+
+
+```
+First we define the resampling procedure. Then, we perform cross validation. We fit the model on the fold's training data, predict on the fold's test. We resample predictions for all cv folds and train the model on our train data. Below are the confusion matrices for the resampled predictions for each model.
+```{r}
+cmlogreg_cv<-calculate_conf_mat(logreg_cv,max_j_index_threshold_logreg)
+
+```
+
+```{r}
+TPR_logreg_cv <- cmlogreg_cv$table[2,2] / (cmlogreg_cv$table[2,2] + cmlogreg_cv$table[1,2]) # TP / (TP + FN)
+
+```
+
+```{r}
+FPR_logreg_cv <- cmlogreg_cv$table[2,1] / (cmlogreg_cv$table[2,1] + cmlogreg_cv$table[1,1])
+```
+```{r}
+precision_log_reg_cv <- cmlogreg_cv$table[1, 1] / (cmlogreg_cv$table[1, 1] + cmlogreg_cv$table[2, 1])
+```
+
+```{r}
+cmlda_cv<-calculate_conf_mat(lda_cv,max_j_index_threshold_lda)
+```
+
+```{r}
+TPR_lda_cv <- cmlda_cv$table[2,2] / (cmlda_cv$table[2,2] + cmlda_cv$table[1,2]) # TP / (TP + FN)
+```
+
+
+```{r}
+FPR_lda_cv <- cmlda_cv$table[2,1] / (cmlda_cv$table[2,1] + cmlda_cv$table[1,1])
+```
+
+```{r}
+precision_lda_cv <- cmlda_cv$table[1, 1] / (cmlda_cv$table[1, 1] + cmlda_cv$table[2, 1])
+```
+
+
+```{r}
+cmqda_cv<-calculate_conf_mat(qda_cv,max_j_index_threshold_qda)
+
+```
+
+```{r}
+TPR_qda_cv <- cmqda_cv$table[2,2] / (cmqda_cv$table[2,2] + cmqda_cv$table[1,2]) # TP / (TP + FN)
+```
+
+```{r}
+FPR_qda_cv <- cmqda_cv$table[2,1] / (cmqda_cv$table[2,1] + cmqda_cv$table[1,1])
+```
+
+```{r}
+precision_qda_cv <- cmqda_cv$table[1, 1] / (cmqda_cv$table[1, 1] + cmqda_cv$table[2, 1])
+```
+
+```{r}
+roc_cv_plot <- function(model_cv, model_name) {
+cv_predictions <- collect_predictions(model_cv)
+cv_ROC <- cv_predictions %>%
+roc_curve(truth=Blue_Tarp, .pred_1, event_level="second")
+autoplot(cv_ROC) +
+labs(title=model_name)
+}
+
+```
+
+There is no real need to try and optimize the above models (Logstic, QDA, and LDA) further, with step_pca as predictors, or in other words, try to reduce the dimensionality of our dataset further. The reason is because with a dataset with only 3 predictors, there will be diminishing returns from trying to use step_pca as predictors. We already have excellent performance metrics without step_pca.
+
+```{r}
+# Define the model specification
+penalized_logit <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+
+# Define the workflow
+penalized_wf <- workflow() %>%
+  add_recipe(dis_recipe) %>%
+  add_model(penalized_logit)
+
+# Define the resampling method
+
+
+logreg_params <- extract_parameter_set_dials(penalized_wf) %>%
+update(
+# penalty=penalty(c(-3, 0.75)),
+penalty=penalty(c(-3, -0.5)),
+mixture=mixture(c(0, 1))
+)
+
+control=control_resamples(save_pred = TRUE)
+
+# Tune the model
+penalized_tuned <- tune_grid(
+  penalized_wf,
+  resamples = resamples,
+  grid = grid_random(logreg_params, size=50),
+  control = control
+)
+
+# Extract the best model
+best_penalized <- select_best(penalized_tuned, "roc_auc")
+
+show_best(penalized_tuned, metric='roc_auc', n=1)
+
+optimal_parameters <- best_penalized$.config
+# Train the final model with optimal parameters
+final_penalized_wf <- finalize_workflow(penalized_wf, best_penalized ) %>%
+  fit(train)
+  
+set.seed(123)
+logreg_tuned_cv <- fit_resamples(final_penalized_wf, resamples, metrics=metrics, control=cv_control)
+
+# Predict probabilities on the train set
+#train_predictions <- augment(final_penalized_model, new_data = train)
+
+penalized_results <- threshold_graph(logreg_tuned_cv, "Penalized LR")
+plot_penalized<- penalized_results$plot
+max_j_index_threshold_penalized <- penalized_results$max_j_index_threshold
+#plot_penalized
+
+
+```
+KNN model
+
+Next we will do the KNN model.  We are also going to normalize the data prior to fitting the model. We will explore a range of K values between 2 and 20 and try to assess the best value for k based on roc_auc with each k value within our 10 folds.
+```{r}
+# Define the recipe
+rec <- recipe(Blue_Tarp ~ ., data = train) %>%
+  step_center(all_numeric()) %>%
+  step_scale(all_numeric())
+
+# Define the model specification
+knn_spec <- nearest_neighbor(weight_func = "rectangular", neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+
+# Define the workflow
+knn_wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model(knn_spec)
+
+nn_params <- extract_parameter_set_dials(knn_wf) %>%
+update(
+neighbors=neighbors(c(2, 20))
+)
+
+
+
+# Tune the model
+knn_tuned <- tune_grid(
+  knn_wf,
+  resamples = resamples,
+  grid = grid_regular(nn_params, levels=20),
+  control = control
+)
+
+# Extract the best model
+best_knn <- select_best(knn_tuned, "roc_auc")
+
+tuned_nn_wf <-finalize_workflow(knn_wf,best_knn) %>%
+fit(train)
+
+set.seed(123)
+nn_cv <- fit_resamples(tuned_nn_wf, resamples, metrics=metrics, control=control_resamples(save_pred = TRUE))
+# Obtain predictions using augment
+#augmented_data <- augment(cv_fit, new_data = train)
+#augmented_data <- tuned_nn_model %>%
+  #augment(new_data = train)
+
+knn_results <- threshold_graph(nn_cv, "KNN")
+plot_knn <- knn_results$plot
+max_j_index_threshold_knn <- knn_results$max_j_index_threshold
+
+
+```
+
+
+
+This model is outperforming the previous three models, especially in accuracy and specificity. The performance among k values is relatively the same. It doesn't truly matter which k value we choose, because the knn model is performing well for all k values chosen, but if we had to, I would choose the k that has the highest J index. The specificity and accuracy are extremely high for this "best" value of k.
+
+based on J-index. J index is a better metric for imbalanced classes when comparing values for k in knn.
+This model has excellent performance metrics seemingly (accuracy, sensitivity, and specificity). We are training the model with the best_k.
+
+ Below are the selection results of the 10 fold CV based on maximizing J index.
+
+
+
+Below are the metrics for the train data set at the optimal threshold of .9 for our KNN model.
+
+
+The above performance metrics seem good, however, we need to evaluate the confusion matrix at this optimal threshold. 
+
+```{r}
+cmpen_cv<-calculate_conf_mat(logreg_tuned_cv,max_j_index_threshold_penalized)
+```
+
+
+```{r}
+TPR_logreg_tuned_cv <- cmpen_cv$table[2,2] / (cmpen_cv$table[2,2] + cmpen_cv$table[1,2]) # TP / (TP + FN)
+```
+
+```{r}
+FPR_logreg_tuned_cv <- cmpen_cv$table[2,1] / (cmpen_cv$table[2,1] + cmpen_cv$table[1,1])
+```
+```{r}
+precision_logreg_tuned_cv <- cmpen_cv$table[1, 1] / (cmpen_cv$table[1, 1] + cmpen_cv$table[2, 1])
+```
+
+We see that with threshold optimization, our confusion matrix produces excellent results. This means it identified many of the positive cases correctly. It also was able to identify most negative cases as negative. since we have been able to distinguish between the two classes well with knn based on the confusion matrix, we will say it is effective for our purposes.
+```{r}
+cmknn_cv<-calculate_conf_mat(nn_cv,max_j_index_threshold_knn[1])
+
+TPR_knntuned_cv <- cmknn_cv$table[2,2] / (cmknn_cv$table[2,2] + cmknn_cv$table[1,2]) # TP / (TP + FN)
+```
+
+
+```{r}
+FPR_knntuned_cv <- cmknn_cv$table[2,1] / (cmknn_cv$table[2,1] + cmknn_cv$table[1,1])
+```
+```{r}
+precision_knntuned_cv <- cmknn_cv$table[1, 1] / (cmknn_cv$table[1, 1] + cmknn_cv$table[2, 1])
+```
+
+Based on these metrics, so far, knn seems to be the best out of those five. The TPR for cross validation is the highest. 
+
+Below we can see an autoplot of the random forest model.
+```{r}
+library(bonsai)
+library(ranger)
+library(dials)
+library(parsnip)
+control_b=control_bayes(save_pred = TRUE)
+
+random_wf <- workflow() %>%
+add_recipe(recipe(formula, data=train)) %>%
+add_model(rand_forest(mode="classification", mtry=tune(), min_n=tune()) %>%
+set_engine("ranger", importance="impurity"))
+
+parameters <- extract_parameter_set_dials(random_wf)
+parameters
+
+parameters <- extract_parameter_set_dials(random_wf) %>%
+update(mtry = mtry(c(2, 8)))
+
+tune_random <- tune_bayes(random_wf,
+resamples=resamples,
+metrics=metrics,
+param_info=parameters, iter=25
+)
+
+#predictions <- collect_predictions(tune_random)
+
+autoplot(tune_random)
+```
+
+```{r}
+# Extract the best model
+best_random<-select_best(tune_random, metric="roc_auc")
+
+best_random_wf <- random_wf %>%
+finalize_workflow(best_random)%>%
+  fit(train)
+
+set.seed(123)
+random_cv <- fit_resamples(best_random_wf, resamples, metrics=metrics, control=cv_control)
+
+
+#optimal_parameters1 <- best_random_wf$.config
+
+# Predict probabilities on the train set
+#train_predictions1 <- augment(best_random_wf, new_data = train)
+
+random_results <- threshold_graph(random_cv, "RANDOM")
+plot_random <- random_results$plot
+max_j_index_threshold_random <- random_results$max_j_index_threshold
+max_j_index_threshold_random
+#plot_random
+
+```
+
+```{r}
+cmrandom_cv<-calculate_conf_mat(random_cv,max_j_index_threshold_random)
+```
+
+```{r}
+TPR_random_cv <- cmrandom_cv$table[2,2] / (cmrandom_cv$table[2,2] + cmrandom_cv$table[1,2]) # TP / (TP + FN)
+```
+
+```{r}
+FPR_random_cv<- cmrandom_cv$table[2,1] / (cmrandom_cv$table[2,1] + cmrandom_cv$table[1,1])
+```
+```{r}
+precision_random_cv <- cmrandom_cv$table[1, 1] / (cmrandom_cv$table[1, 1] + cmrandom_cv$table[2, 1])
+```
+
+```{r}
+svm_linear_spec <- svm_linear(mode = "classification", cost = tune(), margin=tune()) %>%
+  set_engine("kernlab")
+
+svm_poly_spec <- svm_poly(mode = "classification", cost = tune(), degree = tune()) %>%
+  set_engine("kernlab")
+
+svm_rbf_spec <- svm_rbf(cost = tune(), margin = tune(), rbf_sigma = tune()) %>%
+  set_engine("kernlab") %>%
+  set_mode("classification")
+
+workflow_linear1 <- workflow() %>%
+  add_model(svm_linear_spec)  %>%
+  add_recipe(dis_recipe)
+
+workflow_poly1 <- workflow() %>%
+  add_model(svm_poly_spec) %>%
+  add_recipe(dis_recipe)
+
+workflow_rbf1 <- workflow() %>%
+  add_model(svm_rbf_spec) %>%
+  add_recipe(dis_recipe)
+
+```
+
+
+```{r}
+control1 <- control_bayes(verbose = TRUE, save_pred = TRUE)
+bayes_results_linear1 <- tune_bayes(
+  workflow_linear1,
+  resamples = resamples,
+  metrics = metrics,
+  control = control1
+)
+param_grid <- extract_parameter_set_dials(workflow_poly1) %>%
+  update(
+    degree = degree_int(range=c(2, 4))
+  )
+
+grid_results_poly1 <- tune_grid(
+  workflow_poly1,
+  resamples = resamples,
+  grid = grid_random(param_grid),
+  metrics = metrics,
+  control = control_grid(save_pred = TRUE)
+)
+
+parameters <- extract_parameter_set_dials(workflow_rbf1) %>%
+update(rbf_sigma = rbf_sigma(c(-1.5, 1)),
+cost=cost(c(-2, 5)))
+
+
+rbf1_results1 <- tune_grid(
+  workflow_rbf1,
+  resamples = resamples,
+  grid=grid_random(parameters),
+  metrics = metrics,
+  control = control_grid(save_pred = TRUE)
+) 
+
+
+show_notes(.Last.tune.result)
+best_linear1 <- select_best(bayes_results_linear1, "roc_auc")
+best_poly1 <- select_best(grid_results_poly1, "roc_auc")
+best_rbf1 <- select_best(rbf1_results1, "roc_auc")
+
+
+```
+
+
+```{r}
+best_linear1_model <- finalize_workflow(workflow_linear1, best_linear1)%>%
+  fit(train)
+
+best_poly1_model <- finalize_workflow(workflow_poly1, best_poly1)%>%
+  fit(train)
+
+best_rbf1_model <- finalize_workflow(workflow_rbf1, best_rbf1)%>%
+  fit(train)
+
+```
+
+Below is the threshold plot for the linear kernel.
+
+```{r}
+set.seed(123)
+linear1_cv <- fit_resamples(best_linear1_model, resamples, metrics=metrics, control=control)
+
+linear1_results <- threshold_graph(linear1_cv, "Linear")
+plot_linear1 <- linear1_results$plot
+max_j_index_threshold_linear1 <- linear1_results$max_j_index_threshold
+#max_j_index_threshold_linear1
+plot_linear1
+
+
+```
+
+
+```{r}
+cmlinear1_cv<-calculate_conf_mat(linear1_cv,max_j_index_threshold_linear1)
+```
+
+
+```{r}
+TPR_linear1_cv <- cmlinear1_cv$table[2,2] / (cmlinear1_cv$table[2,2] + cmlinear1_cv$table[1,2]) # TP / (TP + FN)
+```
+
+```{r}
+FPR_linear1_cv <- cmlinear1_cv$table[2,1] / (cmlinear1_cv$table[2,1] + cmlinear1_cv$table[1,1])
+```
+```{r}
+precision_linear1_cv <- cmlinear1_cv$table[1, 1] / (cmlinear1_cv$table[1, 1] + cmlinear1_cv$table[2, 1])
+```
+
+```{r}
+set.seed(123)
+poly1_cv <- fit_resamples(best_poly1_model, resamples, metrics=metrics, control=control)
+
+poly1_results <- threshold_graph(poly1_cv, "Poly")
+plot_poly1 <- poly1_results$plot
+max_j_index_threshold_poly1 <- poly1_results$max_j_index_threshold
+max_j_index_threshold_poly1
+#plot_poly1
+
+```
+
+```{r}
+cmpoly1_cv<-calculate_conf_mat(poly1_cv,max_j_index_threshold_poly1)
+```
+
+
+```{r}
+TPR_poly1_cv <- cmpoly1_cv$table[2,2] / (cmpoly1_cv$table[2,2] + cmpoly1_cv$table[1,2]) # TP / (TP + FN)
+```
+
+
+```{r}
+FPR_poly1_cv <- cmpoly1_cv$table[2,1] / (cmpoly1_cv$table[2,1] + cmpoly1_cv$table[1,1])
+```
+
+```{r}
+precision_poly1_cv <- cmpoly1_cv$table[1, 1] / (cmpoly1_cv$table[1, 1] + cmpoly1_cv$table[2, 1])
+```
+
+```{r}
+set.seed(123)
+rbf1_cv <- fit_resamples(best_rbf1_model, resamples, metrics=metrics, control=control)
+
+rbf1_results <- threshold_graph(rbf1_cv, "RBF")
+plot_rbf1 <- rbf1_results$plot
+max_j_index_threshold_rbf1 <- rbf1_results$max_j_index_threshold
+max_j_index_threshold_rbf1
+#plot_rbf1
+
+
+```
+
+
+```{r}
+cmrbf1_cv<-calculate_conf_mat(rbf1_cv,max_j_index_threshold_rbf1)
+```
+
+
+```{r}
+TPR_rbf1_cv <- cmrbf1_cv$table[2,2] / (cmrbf1_cv$table[2,2] + cmrbf1_cv$table[1,2]) # TP / (TP + FN)
+```
+
+```{r}
+FPR_rbf1_cv <- cmrbf1_cv$table[2,1] / (cmrbf1_cv$table[2,1] + cmrbf1_cv$table[1,1])
+```
+
+```{r}
+precision_rbf1_cv <- cmrbf1_cv$table[1, 1] / (cmrbf1_cv$table[1, 1] + cmrbf1_cv$table[2, 1])
+```
+
+```{r}
+print("best log reg tuned parameters:")
+print(best_penalized)
+print("best random forest parameters:")
+print(best_random)
+print("best KNN parameters:")
+print(best_knn)
+print("best linear kernel parameters:")
+print(best_linear1)
+print("best poly kernel parameters:")
+print(best_poly1)
+print("best rbf kernel parameters:")
+print(best_rbf1)
+```
+
+```{r}
+print(paste("Max J Index Threshold for LogReg:", max_j_index_threshold_logreg))
+print(paste("Max J Index Threshold for LDA:", max_j_index_threshold_lda))
+print(paste("Max J Index Threshold for QDA:", max_j_index_threshold_qda))
+print(paste("Max J Index Threshold for Penalized:", max_j_index_threshold_penalized))
+print(paste("Max J Index Threshold for KNN:", max_j_index_threshold_knn[1]))
+print(paste("Max J Index Threshold for Random:", max_j_index_threshold_random))
+print(paste("Max J Index Threshold for Linear Kernel:", max_j_index_threshold_linear1))
+print(paste("Max J Index Threshold for Poly Kernel:", max_j_index_threshold_poly1))
+print(paste("Max J Index Threshold for RBF Kernel:", max_j_index_threshold_rbf1))
+```
+
+```{r}
+performance_table_cv <- data.frame(
+  Model = c("Logistic Regression", "LDA", "QDA","Logreg Tuned","KNN Tuned", "Random Forest", "Linear Kernel", "Poly Kernel", "RBF Kernel"), # Add all your model names
+  TPR = c(TPR_logreg_cv, TPR_lda_cv, TPR_qda_cv, TPR_logreg_tuned_cv, TPR_knntuned_cv, TPR_random_cv, TPR_linear1_cv, TPR_poly1_cv, TPR_rbf1_cv), # Add all your TPR values
+  FPR = c(FPR_logreg_cv, FPR_lda_cv, FPR_qda_cv, FPR_logreg_tuned_cv, FPR_knntuned_cv, FPR_random_cv, FPR_linear1_cv, FPR_poly1_cv, FPR_rbf1_cv), # Add all your FPR values
+  Precision = c(precision_log_reg_cv, precision_lda_cv, precision_qda_cv, precision_logreg_tuned_cv, precision_knntuned_cv, precision_random_cv, precision_linear1_cv, precision_poly1_cv, precision_rbf1_cv)
+)
+
+# Print the table
+print("performance table CV:")
+print(performance_table_cv)
+```
+
+```{r}
+roc_cv_data <- function(model_cv) {
+cv_predictions <- collect_predictions(model_cv)
+cv_predictions %>%
+roc_curve(truth=Blue_Tarp, .pred_1, event_level="second")
+}
+bind_rows(
+roc_cv_data(logreg_cv) %>% mutate(model="Logistic regression"),
+roc_cv_data(lda_cv) %>% mutate(model="LDA"),
+roc_cv_data(qda_cv) %>% mutate(model="QDA"),
+roc_cv_data(logreg_tuned_cv)%>% mutate(model="Logistic regression Tuned"),
+roc_cv_data(nn_cv)%>%mutate(model="KNN"),
+roc_cv_data(random_cv)%>%mutate(model="Random"),
+roc_cv_data(linear1_cv)%>%mutate(model="Linear Kernel SVM"),
+roc_cv_data(poly1_cv)%>%mutate(model= "Polynomial Kernel SVM"),
+roc_cv_data(rbf1_cv)%>%mutate(model= "RBF Kernel")
+) %>%
+ggplot(aes(x=1-specificity, y=sensitivity, color=model)) +
+geom_line()
+```
+
+```{r}
+library(broom)
+
+
+# Fit models
+logreg_fit <- logreg_wf %>%
+  fit(data = train)
+
+lda_fit <- lda_wf %>%
+  fit(data = train)
+
+qda_fit <- qda_wf %>%
+  fit(data = train)
+
+augmented_test_data_logreg <- augment(logreg_fit, new_data = test)
+```
+
+```{r}
+cv_metrics1 <- bind_rows(
+collect_metrics(logreg_cv) %>% mutate(model="Logistic regression"),
+collect_metrics(lda_cv) %>% mutate(model="LDA"),
+collect_metrics(qda_cv) %>% mutate(model="QDA"),
+collect_metrics(linear1_cv) %>% mutate(model="Linear Kernel"),
+collect_metrics(poly1_cv) %>% mutate(model="Poly Kernel"),
+collect_metrics(rbf1_cv) %>% mutate(model="RBF Kernel"),
+show_best(tune_random, metric="accuracy", 1) %>%
+mutate(model="Random Forest"),
+show_best(tune_random, metric="roc_auc", 1) %>%
+mutate(model="Random Forest"),
+show_best(penalized_tuned, metric="accuracy", 1) %>%
+mutate(model="Logistic regression tuned"),
+show_best(penalized_tuned, metric="roc_auc", 1) %>%
+mutate(model="Logistic regression tuned"),
+show_best(knn_tuned, metric="accuracy", 1) %>%
+mutate(model="Nearest neighbors tuned"),
+show_best(knn_tuned, metric="roc_auc", 1) %>%
+mutate(model="Nearest neighbors tuned"),
+)
+
+ggplot(cv_metrics1, aes(x=mean, y=model, xmin=mean-std_err, xmax=mean+std_err)) +
+geom_point() +
+geom_linerange() +
+facet_wrap(~ .metric)
+
+```
+
+```{r}
+cv_metrics1
+```
+
+```{r}
+calculate_metrics <- function(model, test, model_name) {
+  print(paste("Calculating metrics for", model_name, "on test set..."))
+  test_metrics <- bind_cols(
+    model = model_name,
+    dataset = "test",
+    metrics = yardstick::metrics(model %>% augment(test), truth = Blue_Tarp, estimate = .pred_class),
+    roc_auc = yardstick::roc_auc(model %>% augment(test), truth = Blue_Tarp, .pred_1, event_level = "second")
+  )
+  
+  return(test_metrics)
+}
+
+test_metrics_logreg<-calculate_metrics(logreg_fit, test, "Log Reg Untuned")
+test_metrics_lda<-calculate_metrics(lda_fit, test, "LDA Untuned")
+test_metrics_qda<-calculate_metrics(qda_fit, test, "QDA Untuned")
+test_metrics_penalized<-calculate_metrics(final_penalized_wf, test, "Penalized Logistic Regression")
+test_metrics_knn_tuned<-calculate_metrics(tuned_nn_wf, test, "KNN Tuned")
+test_metrics_random<-calculate_metrics(best_random_wf, test, "Random Forest")
+test_metrics_linear1<-calculate_metrics(best_linear1_model, test, "Linear Kernel")
+test_metrics_poly1<-calculate_metrics(best_poly1_model, test, "Poly Kernel")
+test_metrics_rbf1<-calculate_metrics(best_rbf1_model, test, "RBF Kernel")
+
+
+disaster_metrics <- bind_rows(
+  test_metrics_logreg,
+  test_metrics_lda,
+  test_metrics_qda,
+  test_metrics_penalized,
+  test_metrics_knn_tuned,
+  test_metrics_random,
+  test_metrics_linear1,
+  test_metrics_poly1,
+  test_metrics_rbf1
+)
+
+filtered_metrics <- disaster_metrics %>%
+  # Select only rows where .metric...3 is 'accuracy' or .metric...6 is 'roc_auc'
+  filter(.metric...3 == 'accuracy' & .metric...6 == 'roc_auc') %>%
+  # Rename the columns accordingly
+  rename(accuracy = .estimate...5, roc_auc = .estimate...8)
+  
+drop <- c(".estimator...4",".estimator...7",".metric...3",".metric...6")
+
+
+filtered_metrics = filtered_metrics[,!(names(filtered_metrics) %in% drop)]
+
+
+print(filtered_metrics)
+print(names(filtered_metrics))
+
+```
+
+```{r}
+
+# Calculate ROC curve for each model
+roc_curves <- bind_rows(
+  roc_curve(augment(logreg_fit, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "Logreg Untuned"),
+  roc_curve(augment(lda_fit, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "LDA Untuned"),
+  roc_curve(augment(qda_fit, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "QDA Untuned"),
+  roc_curve(augment(final_penalized_wf, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "Penalized Logistic Regression"),
+  roc_curve(augment(tuned_nn_wf, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "Tuned KNN"),
+  roc_curve(augment(best_random_wf, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "Random Forest"),
+  roc_curve(augment(best_linear1_model, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "Linear Kernel"),
+  roc_curve(augment(best_poly1_model, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "Poly Kernel"),
+  roc_curve(augment(best_rbf1_model, test), Blue_Tarp, .pred_1, event_level = "second") %>%
+    mutate(model = "RBF Kernel")
+)
+
+# Plot ROC curves
+ggplot(roc_curves, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity", color = "Model") +
+  theme_minimal() +
+  ggtitle("ROC Curves for Different Models on Test Set")
+
+```
+
+
+```{r}
+calculate_conf_mat_test <- function(model, new_data, threshold) {
+  augment(model, new_data) %>%
+    mutate(
+      .pred_class = if_else(.pred_1 > threshold, 1, 0),
+      .pred_class = factor(.pred_class, levels = c(0, 1))
+    ) %>%
+    conf_mat(truth = Blue_Tarp, new_data=test, estimate = .pred_class)
+}
+
+cmlogreg_test <- calculate_conf_mat_test(logreg_fit, test, threshold = max_j_index_threshold_logreg)
+
+cmlda_test <- calculate_conf_mat_test(lda_fit, test, threshold = max_j_index_threshold_lda)
+
+cmqda_test <- calculate_conf_mat_test(qda_fit, test, threshold = max_j_index_threshold_qda)
+
+cmlogreg_tuned_test<-calculate_conf_mat_test(final_penalized_wf, test, threshold = max_j_index_threshold_penalized)
+
+cmknntuned_test <- calculate_conf_mat_test(tuned_nn_wf, test, threshold = max_j_index_threshold_knn[1])
+
+cmrandom_test <- calculate_conf_mat_test(best_random_wf, test, threshold = max_j_index_threshold_random)
+
+cmlinear1_test<-calculate_conf_mat_test(best_linear1_model, test, threshold = max_j_index_threshold_linear1)
+
+cmpoly1_test<-calculate_conf_mat_test(best_poly1_model, test, threshold = max_j_index_threshold_poly1)
+
+cmrbf1_test<-calculate_conf_mat_test(best_rbf1_model, test, threshold = max_j_index_threshold_rbf1)
+
+
+```
+
+
+```{r}
+TPR_logreg_test <- cmlogreg_test$table[2,2] / (cmlogreg_test$table[2,2] + cmlogreg_test$table[1,2]) # TP / (TP + FN)
+TPR_lda_test <- cmlda_test$table[2,2] / (cmlda_test$table[2,2] + cmlda_test$table[1,2]) # TP / (TP + FN)
+TPR_qda_test <- cmqda_test$table[2,2] / (cmqda_test$table[2,2] + cmqda_test$table[1,2]) # TP / (TP + FN)
+TPR_logreg_tuned_test <- cmlogreg_tuned_test$table[2,2] / (cmlogreg_tuned_test$table[2,2] + cmlogreg_tuned_test$table[1,2]) # TP / (TP + FN)
+TPR_knntuned_test <- cmknntuned_test$table[2,2] / (cmknntuned_test$table[2,2] + cmknntuned_test$table[1,2]) # TP / (TP + FN)
+TPR_random_test <- cmrandom_test$table[2,2] / (cmrandom_test$table[2,2] + cmrandom_test$table[1,2]) # TP / (TP + FN)
+TPR_linear1_test <- cmlinear1_test$table[2,2] / (cmlinear1_test$table[2,2] + cmlinear1_test$table[1,2]) # TP / (TP + FN)
+TPR_poly1_test <- cmpoly1_test$table[2,2] / (cmpoly1_test$table[2,2] + cmpoly1_test$table[1,2]) # TP / (TP + FN)
+TPR_rbf1_test <- cmrbf1_test$table[2,2] / (cmrbf1_test$table[2,2] + cmrbf1_test$table[1,2]) # TP / (TP + FN)
+```
+
+```{r}
+FPR_logreg_test <- cmlogreg_test$table[2,1] / (cmlogreg_test$table[2,1] + cmlogreg_test$table[1,1])
+FPR_lda_test <- cmlda_test$table[2,1] / (cmlda_test$table[2,1] + cmlda_test$table[1,1])
+FPR_qda_test <- cmqda_test$table[2,1] / (cmqda_test$table[2,1] + cmqda_test$table[1,1])
+FPR_logreg_tuned_test <- cmlogreg_tuned_test$table[2,1] / (cmlogreg_tuned_test$table[2,1] + cmlogreg_tuned_test$table[1,1])
+FPR_knn_tuned_test <- cmknntuned_test$table[2,1] / (cmknntuned_test$table[2,1] + cmknntuned_test$table[1,1])
+FPR_random_test <- cmrandom_test$table[2,1] / (cmrandom_test$table[2,1] + cmrandom_test$table[1,1])
+FPR_linear1_test <- cmlinear1_test$table[2,1] / (cmlinear1_test$table[2,1] + cmlinear1_test$table[1,1])
+FPR_poly1_test <- cmpoly1_test$table[2,1] / (cmpoly1_test$table[2,1] + cmpoly1_test$table[1,1])
+FPR_rbf1_test <- cmrbf1_test$table[2,1] / (cmrbf1_test$table[2,1] + cmrbf1_test$table[1,1])
+
+```
+
+```{r}
+precision_logreg_test <- cmlogreg_test$table[1, 1] / (cmlogreg_test$table[1, 1] + cmlogreg_test$table[2, 1])
+precision_lda_test <- cmlda_test$table[1, 1] / (cmlda_test$table[1, 1] + cmlda_test$table[2, 1])
+precision_qda_test <- cmqda_test$table[1, 1] / (cmqda_test$table[1, 1] + cmqda_test$table[2, 1])
+precision_logreg_tuned_test<-cmlogreg_tuned_test$table[1, 1] / (cmlogreg_tuned_test$table[1, 1] + cmlogreg_tuned_test$table[2, 1])
+precision_knntuned_test<-cmknntuned_test$table[1, 1] / (cmknntuned_test$table[1, 1] + cmknntuned_test$table[2, 1])
+precision_random_test<-cmrandom_test$table[1, 1]/ (cmrandom_test$table[1, 1] + cmrandom_test$table[2, 1])
+precision_linear1_test<-cmlinear1_test$table[1, 1]/ (cmlinear1_test$table[1, 1] + cmlinear1_test$table[2, 1])
+precision_poly1_test<-cmpoly1_test$table[1, 1]/ (cmpoly1_test$table[1, 1] + cmpoly1_test$table[2, 1])
+precision_rbf1_test<-cmrbf1_test$table[1, 1]/ (cmrbf1_test$table[1, 1] + cmrbf1_test$table[2, 1])
+
+
+
+```
+
+
+```{r}
+performance_table_test <- data.frame(
+  Model = c("Logistic Regression", "LDA", "QDA","Logreg Tuned","KNN Tuned", "Random Forest", "Linear Kernel", "Poly Kernel", "RBF Kernel"), 
+  TPR = c(TPR_logreg_test, TPR_lda_test, TPR_qda_test, TPR_logreg_tuned_test, TPR_knntuned_test, TPR_random_test, TPR_linear1_test, TPR_poly1_test, TPR_rbf1_test), 
+  FPR = c(FPR_logreg_test, FPR_lda_test, FPR_qda_test, FPR_logreg_tuned_test, FPR_knn_tuned_test, FPR_random_test, FPR_linear1_test, FPR_poly1_test, FPR_rbf1_test),
+  Precision = c(precision_logreg_test, precision_lda_test, precision_qda_test, precision_logreg_tuned_test, precision_knntuned_test, precision_random_test, precision_linear1_test, precision_poly1_test, precision_rbf1_test)
+)
+print("performance table test:")
+print(performance_table_test)
+
+```
+
+
+```{r}
+stopCluster(cl)
+registerDoSEQ()
+
+```
+
+
+
